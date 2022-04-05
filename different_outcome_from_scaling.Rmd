@@ -1,0 +1,165 @@
+---
+title: "Using do.scale = TRUE leads to sub-populations"
+author: "George T. Hall"
+date: "Compiled on `r format(Sys.time(), '%d %B %Y')`"
+output:
+    github_document:
+        toc: true
+        toc_depth: 2
+        html_preview: false
+---
+
+# Load data and remove outliers
+
+```{r}
+# Set global Rmarkdown options
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.align = "center",
+                      dpi = 300, fig.width = 7)
+
+library(ggplot2)
+library(Seurat)
+library(sctransform)
+
+cells <- Read10X(data.dir = "filtered_feature_bc_matrix_ge_only")
+cells <- CreateSeuratObject(counts = cells, project = "DONOR_1", min.cells = 3,
+                            min.features = 200, names.delim = "-",
+                            names.field = 2)
+cells <- RenameIdents(object = cells, "1" = "Sample-1", "2" = "Sample-2",
+                      "3" = "Sample-3", "4" = "Sample-4", "5" = "Sample-5",
+                      "6" = "Sample-6")
+cells@meta.data$name <- Idents(cells)
+
+# Compute percentage of mitochondrial DNA in each cell
+cells[["percent.mt"]] <- PercentageFeatureSet(cells, pattern = "^MT-")
+
+# Remove outliers
+cells <- subset(cells,
+                subset = ((((name != "Sample-2" & nFeature_RNA < 2800) |
+                            ((name == "Sample-2" & nFeature_RNA < 4500))) &
+                           ((nFeature_RNA > 750))) &
+                         (((name != "Sample-2" & nCount_RNA < 9000) |
+                           ((name == "Sample-2" & nCount_RNA < 17000))) &
+                          ((nCount_RNA > 2500))) &
+                         ((percent.mt > 2) & (percent.mt < 10))))
+
+# Remove all smaller samples
+cells <- subset(cells, subset = name %in% c("Sample-1", "Sample-2", "Sample-4"))
+```
+
+# SCTransform with do.scale = FALSE
+
+```{r}
+cells_sct_no_scale <- SCTransform(cells, do.scale = FALSE)
+cells_sct_no_scale <- RunPCA(cells_sct_no_scale,
+                             features = VariableFeatures(cells_sct_no_scale))
+cells_sct_no_scale <- RunUMAP(cells_sct_no_scale, dims = 1:20)
+
+DimPlot(cells_sct_no_scale) + ggtitle("SCTransform with do.scale = FALSE")
+
+trbv_genes <- c("TRBV3-1", "TRBV20-1", "TRBV7-9", "TRBV4-1", "TRBV4-2",
+                "TRBV7-2", "TRBV5-1")
+FeaturePlot(cells_sct_no_scale, features = trbv_genes) +
+    ggtitle("SCTransform with do.scale = FALSE")
+```
+
+## Regressing out TRBV genes doesn't remove subpopulations
+
+We can regress out the seven genes that are the most differentially expressed
+within each subpopulation (see above FeaturePlot) to see if that removes them.
+We can do this either by adding a single, combined score for all genes of
+interest, or by adding a separate score for each gene (to try to deal with low
+average expression of each gene which may cause their influence to be lost in
+the combined score).
+
+### Combined score
+
+```{r}
+cells_sct_no_scale <- AddModuleScore(cells_sct_no_scale,
+                                     features = list(trbv_genes),
+                                     name = "trbv.score")
+cells_sct_no_scale <- SCTransform(cells_sct_no_scale, do.scale = FALSE,
+                                  vars.to.regress = "trbv.score1")
+cells_sct_no_scale <- RunPCA(cells_sct_no_scale,
+                             features = VariableFeatures(cells_sct_no_scale))
+cells_sct_no_scale <- RunUMAP(cells_sct_no_scale, dims = 1:20)
+
+DimPlot(cells_sct_no_scale) +
+    ggtitle("TRBV genes regressed out (combined score)")
+```
+
+### Individual scores
+
+```{r}
+cells_sct_no_scale <- AddModuleScore(cells_sct_no_scale,
+                                     features = list(c("TRBV3-1")),
+                                     name = "trbv3_1.score")
+cells_sct_no_scale <- AddModuleScore(cells_sct_no_scale,
+                                     features = list(c("TRBV20-1")),
+                                     name = "trbv20_1.score")
+cells_sct_no_scale <- AddModuleScore(cells_sct_no_scale,
+                                     features = list(c("TRBV7-9")),
+                                     name = "trbv7_9.score")
+cells_sct_no_scale <- AddModuleScore(cells_sct_no_scale,
+                                     features = list(c("TRBV4-1")),
+                                     name = "trbv4_1.score")
+cells_sct_no_scale <- AddModuleScore(cells_sct_no_scale,
+                                     features = list(c("TRBV4-2")),
+                                     name = "trbv4_2.score")
+cells_sct_no_scale <- AddModuleScore(cells_sct_no_scale,
+                                     features = list(c("TRBV7-2")),
+                                     name = "trbv7_2.score")
+cells_sct_no_scale <- AddModuleScore(cells_sct_no_scale,
+                                     features = list(c("TRBV5-1")),
+                                     name = "trbv5_1.score")
+trbv_score_names <- c("trbv3_1.score1", "trbv20_1.score1", "trbv7_9.score1",
+                      "trbv4_1.score1", "trbv4_2.score1", "trbv7_2.score1",
+                      "trbv5_1.score1")
+
+cells_sct_no_scale <- SCTransform(cells_sct_no_scale, do.scale = FALSE,
+                                  vars.to.regress = trbv_score_names)
+cells_sct_no_scale <- RunPCA(cells_sct_no_scale,
+                             features = VariableFeatures(cells_sct_no_scale))
+cells_sct_no_scale <- RunUMAP(cells_sct_no_scale, dims = 1:20)
+
+DimPlot(cells_sct_no_scale) +
+    ggtitle("TRBV genes regressed out (individual scores)")
+```
+
+# SCTransform with do.scale = TRUE
+
+```{r}
+cells_sct_with_scale <- SCTransform(cells, do.scale = TRUE)
+cells_sct_with_scale <- RunPCA(cells_sct_with_scale,
+                               features = VariableFeatures(cells_sct_with_scale))
+cells_sct_with_scale <- RunUMAP(cells_sct_with_scale, dims = 1:20)
+
+DimPlot(cells_sct_with_scale) + ggtitle("SCTransform with do.scale = TRUE")
+FeaturePlot(cells_sct_with_scale, features = trbv_genes) +
+    ggtitle("SCTransform with do.scale = TRUE")
+```
+
+# NormalizeData + ScaleData
+
+```{r}
+cells_norm_and_scale <- NormalizeData(cells)
+cells_norm_and_scale <- FindVariableFeatures(cells_norm_and_scale)
+cells_norm_and_scale <- ScaleData(cells_norm_and_scale,
+                                  features = VariableFeatures(cells_norm_and_scale))
+cells_norm_and_scale <- RunPCA(cells_norm_and_scale,
+                               features = VariableFeatures(cells_norm_and_scale))
+cells_norm_and_scale <- RunUMAP(cells_norm_and_scale, dims = 1:20)
+
+DimPlot(cells_norm_and_scale) + ggtitle("NormalizeData + ScaleData")
+FeaturePlot(cells_norm_and_scale, features = trbv_genes) +
+    ggtitle("NormalizeData + ScaleData")
+```
+
+# Package versions
+
+<!-- https://stackoverflow.com/a/36777618 -->
+```{r results = TRUE}
+installed.packages()[names(sessionInfo()$otherPkgs), "Version"]
+```
+
+<!-- Stop large blank section at end of report (https://stackoverflow.com/a/57381047) -->
+<div class="tocify-extend-page" data-unique="tocify-extend-page" style="height: 0;"></div>
